@@ -1,0 +1,19 @@
+# Ignore Python cache/bytecode
+__pycache__/
+*.pyc
+*.pyo
+
+# Ignore logs
+*.log
+
+# Ignore backup/swap files
+*.bak
+*.swp
+
+# Ignore system files
+.DS_Store
+Thumbs.db
+
+# Ignore temp build or cache dirs if you ever add them
+build/
+cache/

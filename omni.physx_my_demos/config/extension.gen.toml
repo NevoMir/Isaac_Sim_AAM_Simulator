@@ -1,0 +1,21 @@
+
+[package]
+    archivePath = "https://d2cerybs4newgl.cloudfront.net/omni.physx.demos-107.3.18%2B107.3.1.cp311.u353.zip"
+
+    [package.target]
+
+        [package.target.python]
+            0 = "cp311"
+
+        [package.target.usd]
+            0 = "u353f+stock+24.05+cxx11"
+
+        [package.target.kit]
+            0 = "107.3.1"
+
+    [package.publish]
+        kitVersion = "107.3.1+production.206797.8131b85d.gl"
+        date = 1753299036
+        buildNumber = "107.3.18+release.42123.214216c8.gl"
+        repoName = "omni.physics"
+        signed = 1
