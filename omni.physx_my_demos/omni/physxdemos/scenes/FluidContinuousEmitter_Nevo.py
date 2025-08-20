@@ -42,8 +42,8 @@ class FluidBallEmitterDemo(demo.AsyncDemoBase):
         # continuous emission controls (tweak freely)
         self._emit_enabled = True
         self._emit_rate_particles_per_second = 1500            # particles / s
-        self._emit_radius = 0.35                                # nozzle radius (m)
-        self._emit_velocity = Gf.Vec3f(10.0, 10.0, 0.0)         # initial velocity (m/s)
+        self._emit_radius = 0.15                                # nozzle radius (m)
+        self._emit_velocity = Gf.Vec3f(1.0, 0.0, 0.0)         # initial velocity (m/s)
         self._vel_jitter = 0.5                                  # +/- m/s jitter per axis
         self._pos_jitter = 0.02                                 # +/- m position jitter per axis
         self._emit_accum = 0.0                                  # fractional particle accumulator
@@ -65,7 +65,7 @@ class FluidBallEmitterDemo(demo.AsyncDemoBase):
         self._fluid_rest_offset = 0.05
 
         # nozzle in world space (above the demo room floor)
-        self._nozzle_pos = Gf.Vec3f(-6.0, -6.0, 1.2)
+        self._nozzle_pos = Gf.Vec3f(0.0, 0.0, 1.2)
 
     # ---------- utility: colors ----------
     def create_colors(self):
