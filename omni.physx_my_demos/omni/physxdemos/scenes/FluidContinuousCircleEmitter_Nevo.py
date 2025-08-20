@@ -9,7 +9,7 @@ import numpy as np
 
 
 class FluidBallEmitterDemo(demo.AsyncDemoBase):
-    title = "Continuous Fluid Emitter"
+    title = "Continuous Circle Fluid Emitter"
     category = demo.Categories.PARTICLES
     short_description = "PBD fluid continuously emitted from a nozzle"
     description = "Continuously emits PBD fluid particles with optional smoothing/anisotropy."
@@ -42,11 +42,11 @@ class FluidBallEmitterDemo(demo.AsyncDemoBase):
         # continuous emission controls (tweak freely)
         self._emit_enabled = True
         self._emit_rate_particles_per_second = 500            # particles / s
-        self._emit_radius = 0.3                                # nozzle radius (m)
-        self._emit_velocity = Gf.Vec3f(0.0, 0.0, -10.0)         # initial velocity (m/s)
-        self._vel_jitter = 0.0                                  # +/- m/s jitter per axis
+        self._emit_radius = 0.3                                # nozzle aperture radius (m)
+        self._emit_velocity = Gf.Vec3f(0.0, 0.0, -10.0)        # initial velocity (m/s)
+        self._vel_jitter = 0.0                                 # +/- m/s jitter per axis
         self._pos_jitter = 0.0                                 # +/- m position jitter per axis
-        self._emit_accum = 0.0                                  # fractional particle accumulator
+        self._emit_accum = 0.0                                 # fractional particle accumulator
         
         # particle appearance
         self._particle_size = 0.05                             # particle radius (m)
@@ -67,8 +67,15 @@ class FluidBallEmitterDemo(demo.AsyncDemoBase):
         # fluid spacing (set in create)
         self._fluid_rest_offset = self._particle_size  # Use the configurable particle size
 
-        # nozzle in world space (above the demo room floor)
-        self._nozzle_pos = Gf.Vec3f(0.0, 0.0, 2.0)
+        # --- ORBITING NOZZLE (NEW) ---
+        self._orbit_enabled = True
+        self._orbit_center = Gf.Vec3f(1.0, 1.0, 2.0)           # center of circular path
+        self._orbit_radius = 2.0                               # circle radius (m)
+        self._orbit_omega = 2.0 * math.pi * 0.2                # angular speed (rad/s) -> 0.2 rev/s
+        self._orbit_phase = 0.0                                # initial phase (rad)
+
+        # nozzle position in world space (initialized on orbit center; updated every step if orbiting)
+        self._nozzle_pos = self._orbit_center + Gf.Vec3f(self._orbit_radius, 0.0, 0.0)
 
     # ---------- utility: colors ----------
     def create_colors(self):
@@ -309,6 +316,14 @@ class FluidBallEmitterDemo(demo.AsyncDemoBase):
         if not self._isActive:
             return
         self._time += dt
+
+        # --- update orbiting nozzle position (NEW) ---
+        if self._orbit_enabled:
+            angle = self._orbit_phase + self._orbit_omega * self._time
+            x = self._orbit_center[0] + self._orbit_radius * math.cos(angle)
+            y = self._orbit_center[1] + self._orbit_radius * math.sin(angle)
+            z = self._orbit_center[2]  # keep constant height
+            self._nozzle_pos = Gf.Vec3f(x, y, z)
 
     # ---------- emission logic ----------
     def _emit_batch(self, n_particles):
