@@ -41,11 +41,11 @@ class FluidBallEmitterDemo(demo.AsyncDemoBase):
 
         # continuous emission controls (tweak freely)
         self._emit_enabled = True
-        self._emit_rate_particles_per_second = 1500            # particles / s
-        self._emit_radius = 0.15                                # nozzle radius (m)
-        self._emit_velocity = Gf.Vec3f(1.0, 0.0, 0.0)         # initial velocity (m/s)
-        self._vel_jitter = 0.5                                  # +/- m/s jitter per axis
-        self._pos_jitter = 0.02                                 # +/- m position jitter per axis
+        self._emit_rate_particles_per_second = 500            # particles / s
+        self._emit_radius = 0.1                                # nozzle radius (m)
+        self._emit_velocity = Gf.Vec3f(0.0, 0.0, 0.0)         # initial velocity (m/s)
+        self._vel_jitter = 0.0                                  # +/- m/s jitter per axis
+        self._pos_jitter = 0.0                                 # +/- m position jitter per axis
         self._emit_accum = 0.0                                  # fractional particle accumulator
 
         # capacity (must be large enough for your runtime)
