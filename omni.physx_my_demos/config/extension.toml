@@ -35,6 +35,7 @@ usd = true
 "omni.kit.material.library" = {optional=true}  # to get CreateAndBindMdlMaterialFromLibrary, optional to prevent loading iray in stubgen phase ...
 "omni.physx.tests" = { version = "107.3.18", exact = true, optional=true }
 "omni.physx.tests.visual" = { version = "107.3.18", exact = true, optional=true }
+"omni.warp.core" = {}
 
 [settings]
 # physics demo asset path setting: if not overriden from command line or kit file it will get set when demo ext is started 

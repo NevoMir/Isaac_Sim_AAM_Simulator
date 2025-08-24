@@ -5,16 +5,16 @@ from omni.physx.scripts import physicsUtils, particleUtils
 import omni.physxdemos as demo
 import omni.physx.bindings._physx as physx_settings_bindings
 import omni.timeline
+import omni.usd
 import numpy as np
 
 
 class FluidBallEmitterDemo(demo.AsyncDemoBase):
-    title = "Continuous Circle Fluid Emitter"
+    title = "Continuous Circle Fluid Emitter (Demo Scene, Props Removed) — Half Size"
     category = demo.Categories.PARTICLES
-    short_description = "PBD fluid continuously emitted from a nozzle"
-    description = "Continuously emits PBD fluid particles with optional smoothing/anisotropy."
+    short_description = "PBD fluid in the premade scene; particle size drives physics"
+    description = "Emits PBD fluid along a circular path; particles under /World; size controls physics & visuals."
 
-    # Keep UI params compatible with the original demo
     params = {
         "Single_Particle_Set": demo.CheckboxParam(True),
         "Use_Instancer": demo.CheckboxParam(True),
@@ -39,24 +39,28 @@ class FluidBallEmitterDemo(demo.AsyncDemoBase):
         self._rng_seed = 42
         self._rng = np.random.default_rng(self._rng_seed)
 
-        # continuous emission controls (tweak freely)
-        self._emit_enabled = True
-        self._emit_rate_particles_per_second = 500            # particles / s
-        self._emit_radius = 0.3                                # nozzle aperture radius (m)
-        self._emit_velocity = Gf.Vec3f(0.0, 0.0, -10.0)        # initial velocity (m/s)
-        self._vel_jitter = 0.0                                 # +/- m/s jitter per axis
-        self._pos_jitter = 0.0                                 # +/- m position jitter per axis
-        self._emit_accum = 0.0                                 # fractional particle accumulator
-        
-        # particle appearance
-        self._particle_size = 0.05                             # particle radius (m)
+        # ---------- SIZE KNOBS ----------
+        self._particle_size = 0.025  # <<< RADIUS in meters (physics + visuals)
+        self._emit_radius   = 0.05   # <<< RADIUS in meters (nozzle opening)
 
-        # capacity (must be large enough for your runtime)
+        # emission kinematics
+        self._emit_enabled = True
+        self._emit_rate_particles_per_second = 500
+        self._emit_velocity = Gf.Vec3f(0.0, 0.0, -10.0)
+        self._vel_jitter = 0.0
+        self._pos_jitter = 0.0
+        self._emit_accum = 0.0
+
+        # capacity
         self._max_particles = 100_000
 
         # visuals / colors
         self._num_colors = 20
         self._color_cycle = True
+
+        # anisotropy controls (helps reduce big newborn look)
+        self._useAnisotropy = True
+        self._anisotropy_scale = 0.7  # lower = milder ellipsoids at birth (try 0.6–0.8)
 
         # USD / stage handles
         self._isActive = True
@@ -64,18 +68,19 @@ class FluidBallEmitterDemo(demo.AsyncDemoBase):
         self._sharedParticlePrim = None
         self._session_sub_layer = None
 
-        # fluid spacing (set in create)
-        self._fluid_rest_offset = self._particle_size  # Use the configurable particle size
+        self._fluid_rest_offset = None
 
-        # --- ORBITING NOZZLE (NEW) ---
+        # ORBITING NOZZLE — /World coords
         self._orbit_enabled = True
-        self._orbit_center = Gf.Vec3f(1.0, 1.0, 2.0)           # center of circular path
-        self._orbit_radius = 2.0                               # circle radius (m)
-        self._orbit_omega = 2.0 * math.pi * 0.2                # angular speed (rad/s) -> 0.2 rev/s
-        self._orbit_phase = 0.0                                # initial phase (rad)
-
-        # nozzle position in world space (initialized on orbit center; updated every step if orbiting)
+        self._orbit_center = Gf.Vec3f(0.0, 0.0, 1.0)  # 1 m high
+        self._orbit_radius = 0.5                      # 1 m diameter circle
+        self._orbit_omega = 2.0 * math.pi * 0.2       # 0.2 rev/s
+        self._orbit_phase = 0.0
         self._nozzle_pos = self._orbit_center + Gf.Vec3f(self._orbit_radius, 0.0, 0.0)
+
+        # Debug gizmo for emitter position
+        self._debug_nozzle_viz = True
+        self._nozzle_viz_prim = None
 
     # ---------- utility: colors ----------
     def create_colors(self):
@@ -83,7 +88,6 @@ class FluidBallEmitterDemo(demo.AsyncDemoBase):
         return [self.create_color(frac) for frac in fractions]
 
     def create_color(self, frac):
-        # simple HSL->RGB-ish rainbow, like the original
         hue = frac
         saturation = 1.0
         luminosity = 0.5
@@ -115,108 +119,163 @@ class FluidBallEmitterDemo(demo.AsyncDemoBase):
         pointInstancer = UsdGeom.PointInstancer(self._sharedParticlePrim)
         points = UsdGeom.Points(self._sharedParticlePrim)
 
-        # write sim positions first if smoothing enabled (avoids a frame of mismatch)
-        if self._useSmoothing:
-            simPointsAttr = particleSet.GetSimulationPointsAttr()
-            if not simPointsAttr.HasAuthoredValue():
-                simPointsAttr.Set(Vt.Vec3fArray([]))
-            self.extend_array_attribute(simPointsAttr, positions_list)
+        # write sim positions first if smoothing enabled (avoids one-frame mismatch)
+        simPointsAttr = particleSet.GetSimulationPointsAttr()
+        if not simPointsAttr.HasAuthoredValue():
+            simPointsAttr.Set(Vt.Vec3fArray([]))
+        self.extend_array_attribute(simPointsAttr, positions_list)
 
         if pointInstancer:
             self.extend_array_attribute(pointInstancer.GetPositionsAttr(), positions_list)
             self.extend_array_attribute(pointInstancer.GetVelocitiesAttr(), velocities_list)
             self.extend_array_attribute(pointInstancer.GetProtoIndicesAttr(), [color_index] * len(positions_list))
             self.extend_array_attribute(pointInstancer.GetOrientationsAttr(), [Gf.Quath(1.0, 0.0, 0.0, 0.0)] * len(positions_list))
-            # Scale particles by size multiplier (adjust visual appearance)
-            scale_factor = self._particle_size / 0.05  # relative to original size
-            self.extend_array_attribute(pointInstancer.GetScalesAttr(), [Gf.Vec3f(scale_factor)] * len(positions_list))
+            # prototypes already have correct radius; leave scales empty
+            if not pointInstancer.GetScalesAttr().HasAuthoredValue():
+                pointInstancer.GetScalesAttr().Set(Vt.Vec3fArray([]))
         elif points:
             self.extend_array_attribute(points.GetPointsAttr(), positions_list)
             self.extend_array_attribute(points.GetVelocitiesAttr(), velocities_list)
-            # Use configurable particle size for width
             self.extend_array_attribute(points.GetWidthsAttr(), [2 * self._particle_size] * len(positions_list))
             primVars = points.GetDisplayColorPrimvar()
             primVarsIndicesAttr = primVars.GetIndicesAttr()
             self.extend_array_attribute(primVarsIndicesAttr, [color_index] * len(positions_list))
 
-    def create_shared_particle_prim(self, stage):
-        if not self._useSharedParticleSet or self._sharedParticlePrim is not None:
+    # ---------- scene cleaning ----------
+    def _remove_center_props(self, stage):
+        world = stage.GetPrimAtPath("/World")
+        if not world:
             return
+        to_delete = set()
+        candidates = [
+            "/World/Room/Props", "/World/room/Props", "/World/Props",
+            "/World/Table", "/World/table",
+            "/World/Room/Table", "/World/room/Table",
+        ]
+        for p in candidates:
+            prim = stage.GetPrimAtPath(p)
+            if prim and prim.IsValid():
+                to_delete.add(prim.GetPath())
 
-        particlePointsPath = Sdf.Path("/particles")
+        for prim in Usd.PrimRange(world):
+            if prim == world:
+                continue
+            name = prim.GetName().lower()
+            path_str = prim.GetPath().pathString
 
-        if self._usePointInstancer:
-            self._sharedParticlePrim = particleUtils.add_physx_particleset_pointinstancer(
-                stage,
-                particlePointsPath,
-                [],
-                [],
-                self._particleSystemPath,
-                self_collision=True,
-                fluid=True,
-                particle_group=0,
-                particle_mass=0.001,
-                density=0.0,
-                num_prototypes=0,
-            )
+            if prim.IsA(UsdGeom.Camera):
+                continue
+            if prim.IsA(UsdLux.DistantLight) or prim.IsA(UsdLux.RectLight) or prim.IsA(UsdLux.SphereLight) or prim.IsA(UsdLux.DomeLight):
+                continue
+            if path_str.endswith("/physicsScene"):
+                continue
+            if "ground" in name or "floor" in name:
+                continue
 
-            # Create prototypes for color indices
-            for i, c in enumerate(self._colors):
-                color = Vt.Vec3fArray([c])
-                proto_path = str(particlePointsPath) + f"/particlePrototype{i}"
-                gprim = UsdGeom.Sphere.Define(stage, Sdf.Path(proto_path))
-                gprim.CreateDisplayColorAttr(color)
-                gprim.CreateRadiusAttr().Set(self._particle_size)  # Use configurable particle size
-                UsdGeom.PointInstancer(self._sharedParticlePrim).GetPrototypesRel().AddTarget(Sdf.Path(proto_path))
-                # add dummy particle per prototype to keep Hydra happy
-                self.add_shared_particles([Gf.Vec3f(-4.0, -1.0 + i * 0.2, -0.5)], [Gf.Vec3f(0.0, 0.0, 0.0)], i)
-        else:
-            self._sharedParticlePrim = particleUtils.add_physx_particleset_points(
-                stage,
-                particlePointsPath,
-                [],
-                [],
-                [],
-                self._particleSystemPath,
-                self_collision=True,
-                fluid=True,
-                particle_group=0,
-                particle_mass=0.001,
-                density=0.0,
-            )
-            self._sharedParticlePrim.CreateDisplayColorAttr().Set(self._colors)
-            self._sharedParticlePrim.CreateDisplayColorPrimvar(interpolation="vertex")
-            self._sharedParticlePrim.GetDisplayColorPrimvar().CreateIndicesAttr().Set([])
+            if "table" in name or "desk" in name or name == "props":
+                to_delete.add(prim.GetPath())
 
-        # IMPORTANT: set particle capacity for continuous emission
-        self._sharedParticlePrim.GetPrim().CreateAttribute(
-            "physxParticle:maxParticles", Sdf.ValueTypeNames.Int
-        ).Set(self._max_particles)
+        for p in sorted(to_delete, key=lambda s: len(str(s).split("/")), reverse=True):
+            try:
+                stage.RemovePrim(p)
+            except Exception:
+                pass
+
+    # NEW: remove windows/walls (visuals) AND their colliders; keep floor + floor collider
+    def _remove_walls_windows_and_props(self, stage):
+        paths = [
+            # visuals
+            "/World/roomScene/walls",
+            "/World/roomScene/windows",
+            "/World/Room/walls", "/World/Room/windows",
+            "/World/room/walls", "/World/room/windows",
+            # colliders
+            "/World/roomScene/colliders/walls",
+            "/World/roomScene/colliders/windows",
+            "/World/Room/colliders/walls",
+            "/World/Room/colliders/windows",
+            "/World/room/colliders/walls",
+            "/World/room/colliders/windows",
+        ]
+        to_delete = set()
+        for p in paths:
+            prim = stage.GetPrimAtPath(p)
+            if prim and prim.IsValid():
+                to_delete.add(prim.GetPath())
+
+        # extra sweep: any child in /World/roomScene whose name contains wall/window (but NOT floor)
+        room = stage.GetPrimAtPath("/World/roomScene")
+        if room and room.IsValid():
+            for prim in Usd.PrimRange(room):
+                name = prim.GetName().lower()
+                path = prim.GetPath().pathString.lower()
+                if "floor" in path:
+                    continue
+                if ("wall" in name or "window" in name) and "colliders/floor" not in path:
+                    to_delete.add(prim.GetPath())
+
+        # also remove stray tables/props using the earlier logic
+        self._remove_center_props(stage)
+
+        for p in sorted(to_delete, key=lambda s: len(str(s).split("/")), reverse=True):
+            try:
+                stage.RemovePrim(p)
+            except Exception:
+                pass
+
+    # ---------- physics sizing ----------
+    def _compute_particle_system_offsets(self, r):
+        # r := fluid_rest_offset; keep typical demo ratios
+        fluid_rest_offset = float(r)
+        rest_offset = fluid_rest_offset / 0.6
+        solid_rest_offset = rest_offset
+        particle_contact_offset = max(solid_rest_offset + 0.25 * r, rest_offset)
+        contact_offset = rest_offset + 0.25 * r
+        return contact_offset, rest_offset, particle_contact_offset, solid_rest_offset, fluid_rest_offset
+
+    # ---------- nozzle viz ----------
+    def _ensure_nozzle_viz(self, stage):
+        if not self._debug_nozzle_viz or self._nozzle_viz_prim:
+            return
+        path = Sdf.Path("/World/Nozzle")
+        sphere = UsdGeom.Sphere.Define(stage, path)
+        sphere.CreateRadiusAttr(0.02)
+        sphere.CreateDisplayColorAttr().Set(Vt.Vec3fArray([Gf.Vec3f(1.0, 0.2, 0.2)]))
+        self._nozzle_viz_prim = sphere.GetPrim()
+
+    def _update_nozzle_viz(self):
+        if not (self._debug_nozzle_viz and self._nozzle_viz_prim):
+            return
+        xf = UsdGeom.Xformable(self._nozzle_viz_prim)
+        if not xf.GetOrderedXformOps():
+            xf.AddTranslateOp()
+        xf.SetXformOpOrder([op.GetOpName() for op in xf.GetOrderedXformOps()])
+        xf.GetOrderedXformOps()[0].Set(Gf.Vec3f(self._nozzle_pos[0], self._nozzle_pos[1], self._nozzle_pos[2]))
 
     # ---------- scene setup ----------
     def create(self, stage, Single_Particle_Set, Use_Instancer):
         self._stage = stage
         self._setup_callbacks()
 
-        # force shared particle set for continuous emission
-        self._useSharedParticleSet = True if Single_Particle_Set else True
-        self._usePointInstancer = True if Use_Instancer else True
+        self._useSharedParticleSet = True
+        self._usePointInstancer = True
         self._useSmoothing = True
-        self._useAnisotropy = True
 
         defaultPrimPath, scene = demo.setup_physics_scene(self, stage, metersPerUnit=1.0)
         scenePath = defaultPrimPath + "/physicsScene"
 
-        # Particle System
-        self._particleSystemPath = Sdf.Path("/particleSystem0")
+        # Use premade scene (camera/lights/ground)…
+        demo.get_demo_room(self, stage)
+        # …then surgically remove walls + windows (visuals & colliders) and center props
+        self._remove_walls_windows_and_props(stage)
 
-        # conservative spacing/offsets
-        particleSpacing = 0.18
-        restOffset = particleSpacing * 0.9
-        solidRestOffset = restOffset
-        fluidRestOffset = restOffset * 0.6
-        particleContactOffset = max(solidRestOffset + 0.005, fluidRestOffset / 0.6)
-        contactOffset = restOffset + 0.005
+        # Particle System under /World
+        self._particleSystemPath = Sdf.Path("/World/particleSystem0")
+
+        # physics size from chosen radius
+        r = float(self._particle_size)
+        contactOffset, restOffset, particleContactOffset, solidRestOffset, fluidRestOffset = \
+            self._compute_particle_system_offsets(r)
         self._fluid_rest_offset = fluidRestOffset
 
         particle_system = particleUtils.add_physx_particle_system(
@@ -227,16 +286,17 @@ class FluidBallEmitterDemo(demo.AsyncDemoBase):
             particle_contact_offset=particleContactOffset,
             solid_rest_offset=solidRestOffset,
             fluid_rest_offset=fluidRestOffset,
-            solver_position_iterations=4,
+            solver_position_iterations=6,
             simulation_owner=scenePath,
-            max_neighborhood=96,
+            max_neighborhood=128,
         )
 
-        if self._useSmoothing:
-            particleUtils.add_physx_particle_smoothing(stage, self._particleSystemPath, strength=1.0)
+        # smoothing (kept on)
+        particleUtils.add_physx_particle_smoothing(stage, self._particleSystemPath, strength=1.0)
 
+        # anisotropy (optional; lower scale to tame artifacts)
         if self._usePointInstancer and self._useAnisotropy:
-            particleUtils.add_physx_particle_anisotropy(stage, self._particleSystemPath, scale=1.0)
+            particleUtils.add_physx_particle_anisotropy(stage, self._particleSystemPath, scale=self._anisotropy_scale)
 
         # pbd material
         pbd_particle_material_path = omni.usd.get_stage_next_free_path(stage, "/pbdParticleMaterial", True)
@@ -251,14 +311,14 @@ class FluidBallEmitterDemo(demo.AsyncDemoBase):
         )
         physicsUtils.add_physics_material_to_prim(stage, particle_system.GetPrim(), pbd_particle_material_path)
 
-        # room & colors
-        demo.get_demo_room(self, stage)
-        self._colors = self.create_colors()
+        # Nozzle viz
+        self._ensure_nozzle_viz(stage)
 
+        self._colors = self.create_colors()
         self._sharedParticlePrim = None
         self._session_sub_layer = None
 
-    # ---------- session layer for runtime edits ----------
+    # ---------- session layer ----------
     def create_session_layer(self):
         rootLayer = self._stage.GetRootLayer()
         self._session_sub_layer = Sdf.Layer.CreateAnonymous()
@@ -317,35 +377,30 @@ class FluidBallEmitterDemo(demo.AsyncDemoBase):
             return
         self._time += dt
 
-        # --- update orbiting nozzle position (NEW) ---
         if self._orbit_enabled:
             angle = self._orbit_phase + self._orbit_omega * self._time
             x = self._orbit_center[0] + self._orbit_radius * math.cos(angle)
             y = self._orbit_center[1] + self._orbit_radius * math.sin(angle)
-            z = self._orbit_center[2]  # keep constant height
+            z = self._orbit_center[2]
             self._nozzle_pos = Gf.Vec3f(x, y, z)
+
+        self._update_nozzle_viz()
 
     # ---------- emission logic ----------
     def _emit_batch(self, n_particles):
         if n_particles <= 0:
             return
-        # ensure the shared particle set exists
         self.create_shared_particle_prim(self._stage)
 
         positions = []
         velocities = []
 
-        # color selection
-        if self._color_cycle:
-            color_index = int((self._time * 0.5) * self._num_colors) % self._num_colors
-        else:
-            color_index = 0
+        color_index = int((self._time * 0.5) * self._num_colors) % self._num_colors if self._color_cycle else 0
 
         for _ in range(n_particles):
-            # sample point in a disc (XY), jitter in Z
-            r = self._emit_radius * math.sqrt(self._rng.random())
+            rdisc = self._emit_radius * math.sqrt(self._rng.random())
             theta = 2.0 * math.pi * self._rng.random()
-            radial = Gf.Vec3f(r * math.cos(theta), r * math.sin(theta), 0.0)
+            radial = Gf.Vec3f(rdisc * math.cos(theta), rdisc * math.sin(theta), 0.0)
 
             jitter = Gf.Vec3f(
                 self._rng.uniform(-self._pos_jitter, self._pos_jitter),
@@ -366,29 +421,80 @@ class FluidBallEmitterDemo(demo.AsyncDemoBase):
 
         self.add_shared_particles(positions, velocities, color_index)
 
+    def create_shared_particle_prim(self, stage):
+        if not self._useSharedParticleSet or self._sharedParticlePrim is not None:
+            return
+
+        r = self._particle_size
+        rho = 1000.0  # kg/m^3 (water-like)
+        mass = (4.0 / 3.0) * math.pi * (r ** 3) * rho
+
+        particlePointsPath = Sdf.Path("/World/Particles")  # under /World
+
+        if self._usePointInstancer:
+            self._sharedParticlePrim = particleUtils.add_physx_particleset_pointinstancer(
+                stage,
+                particlePointsPath,
+                [],
+                [],
+                self._particleSystemPath,
+                self_collision=True,
+                fluid=True,
+                particle_group=0,
+                particle_mass=mass,
+                density=0.0,
+                num_prototypes=0,
+            )
+            for i, c in enumerate(self._colors):
+                color = Vt.Vec3fArray([c])
+                proto_path = str(particlePointsPath) + f"/particlePrototype{i}"
+                gprim = UsdGeom.Sphere.Define(stage, Sdf.Path(proto_path))
+                gprim.CreateDisplayColorAttr(color)
+                gprim.CreateRadiusAttr().Set(r)  # visual radius matches physics radius
+                UsdGeom.PointInstancer(self._sharedParticlePrim).GetPrototypesRel().AddTarget(Sdf.Path(proto_path))
+                # dummy to keep Hydra happy
+                self.add_shared_particles([Gf.Vec3f(-4.0, -1.0 + i * 0.2, -0.5)], [Gf.Vec3f(0.0, 0.0, 0.0)], i)
+        else:
+            self._sharedParticlePrim = particleUtils.add_physx_particleset_points(
+                stage,
+                particlePointsPath,
+                [],
+                [],
+                [],
+                self._particleSystemPath,
+                self_collision=True,
+                fluid=True,
+                particle_group=0,
+                particle_mass=mass,
+                density=0.0,
+            )
+            self._sharedParticlePrim.CreateDisplayColorAttr().Set(self._colors)
+            self._sharedParticlePrim.CreateDisplayColorPrimvar(interpolation="vertex")
+            self._sharedParticlePrim.GetDisplayColorPrimvar().CreateIndicesAttr().Set([])
+
+        # capacity for continuous emission
+        self._sharedParticlePrim.GetPrim().CreateAttribute(
+            "physxParticle:maxParticles", Sdf.ValueTypeNames.Int
+        ).Set(self._max_particles)
+
     def update(self, stage, dt, viewport, physxIFace):
         if not (self._isActive and self._is_running and self._emit_enabled):
             return
 
         self.backup_camera()
 
-        # capacity guard
         if self._sharedParticlePrim is not None:
-            # read current count from instancer if possible (cheap heuristic: use positions array length)
             pi = UsdGeom.PointInstancer(self._sharedParticlePrim)
             if pi:
-                pos_attr = pi.GetPositionsAttr()
-                curr = pos_attr.Get()
+                curr = pi.GetPositionsAttr().Get()
                 curr_count = 0 if curr is None else len(curr)
                 if curr_count >= self._max_particles:
                     return
 
-        # accumulate particles to emit
         self._emit_accum += dt * self._emit_rate_particles_per_second
         emit_now = int(self._emit_accum)
         self._emit_accum -= emit_now
 
-        # clamp to remaining capacity if known
         if self._sharedParticlePrim is not None and emit_now > 0:
             pi = UsdGeom.PointInstancer(self._sharedParticlePrim)
             if pi:
