@@ -40,12 +40,12 @@ class FluidBallEmitterDemo(demo.AsyncDemoBase):
         self._rng = np.random.default_rng(self._rng_seed)
 
         # ---------- SIZE KNOBS ----------
-        self._particle_size = 0.025  # <<< RADIUS in meters (physics + visuals)
-        self._emit_radius   = 0.05   # <<< RADIUS in meters (nozzle opening)
+        self._particle_size = 0.003  # <<< RADIUS in meters (physics + visuals)
+        self._emit_radius   = 0.01  # <<< RADIUS in meters (nozzle opening)
 
         # emission kinematics
         self._emit_enabled = True
-        self._emit_rate_particles_per_second = 500
+        self._emit_rate_particles_per_second = 2000
         self._emit_velocity = Gf.Vec3f(0.0, 0.0, -10.0)
         self._vel_jitter = 0.0
         self._pos_jitter = 0.0
@@ -60,7 +60,7 @@ class FluidBallEmitterDemo(demo.AsyncDemoBase):
 
         # anisotropy controls (helps reduce big newborn look)
         self._useAnisotropy = True
-        self._anisotropy_scale = 0.7  # lower = milder ellipsoids at birth (try 0.6–0.8)
+        self._anisotropy_scale = 0.7
 
         # USD / stage handles
         self._isActive = True
@@ -100,7 +100,7 @@ class FluidBallEmitterDemo(demo.AsyncDemoBase):
             Gf.Clampf(absolute[2] - 1.0, 0.0, 1.0),
         )
         linter = Gf.Vec3f(1.0) * (1.0 - saturation) + rgb * saturation
-        rgb = luminosity * linter
+        rgb = 0.5 * linter
         return rgb
 
     # ---------- USD helpers ----------
@@ -130,7 +130,6 @@ class FluidBallEmitterDemo(demo.AsyncDemoBase):
             self.extend_array_attribute(pointInstancer.GetVelocitiesAttr(), velocities_list)
             self.extend_array_attribute(pointInstancer.GetProtoIndicesAttr(), [color_index] * len(positions_list))
             self.extend_array_attribute(pointInstancer.GetOrientationsAttr(), [Gf.Quath(1.0, 0.0, 0.0, 0.0)] * len(positions_list))
-            # prototypes already have correct radius; leave scales empty
             if not pointInstancer.GetScalesAttr().HasAuthoredValue():
                 pointInstancer.GetScalesAttr().Set(Vt.Vec3fArray([]))
         elif points:
@@ -181,7 +180,7 @@ class FluidBallEmitterDemo(demo.AsyncDemoBase):
             except Exception:
                 pass
 
-    # NEW: remove windows/walls (visuals) AND their colliders; keep floor + floor collider
+    # remove windows/walls (visuals) AND their colliders; keep floor + floor collider
     def _remove_walls_windows_and_props(self, stage):
         paths = [
             # visuals
@@ -203,7 +202,6 @@ class FluidBallEmitterDemo(demo.AsyncDemoBase):
             if prim and prim.IsValid():
                 to_delete.add(prim.GetPath())
 
-        # extra sweep: any child in /World/roomScene whose name contains wall/window (but NOT floor)
         room = stage.GetPrimAtPath("/World/roomScene")
         if room and room.IsValid():
             for prim in Usd.PrimRange(room):
@@ -214,7 +212,6 @@ class FluidBallEmitterDemo(demo.AsyncDemoBase):
                 if ("wall" in name or "window" in name) and "colliders/floor" not in path:
                     to_delete.add(prim.GetPath())
 
-        # also remove stray tables/props using the earlier logic
         self._remove_center_props(stage)
 
         for p in sorted(to_delete, key=lambda s: len(str(s).split("/")), reverse=True):
@@ -222,6 +219,54 @@ class FluidBallEmitterDemo(demo.AsyncDemoBase):
                 stage.RemovePrim(p)
             except Exception:
                 pass
+
+    # ---------------- helpers: transform & scale Z on floors ----------------
+    def _set_translate_z(self, stage, path, z):
+        prim = stage.GetPrimAtPath(path)
+        if not (prim and prim.IsValid()):
+            return
+        xf = UsdGeom.Xformable(prim)
+        # find first translate op or add one
+        t_op = None
+        for op in xf.GetOrderedXformOps():
+            if op.GetOpType() == UsdGeom.XformOp.TypeTranslate:
+                t_op = op
+                break
+        if t_op is None:
+            t_op = xf.AddTranslateOp()
+        curr = t_op.Get() or Gf.Vec3f(0.0, 0.0, 0.0)
+        t_op.Set(Gf.Vec3f(curr[0], curr[1], float(z)))
+
+    def _set_scale_z(self, stage, path, z_scale):
+        prim = stage.GetPrimAtPath(path)
+        if not (prim and prim.IsValid()):
+            return
+        xf = UsdGeom.Xformable(prim)
+        s_op = None
+        for op in xf.GetOrderedXformOps():
+            if op.GetOpType() == UsdGeom.XformOp.TypeScale:
+                s_op = op
+                break
+        if s_op is None:
+            s_op = xf.AddScaleOp()
+        curr = s_op.Get() or Gf.Vec3f(1.0, 1.0, 1.0)
+        s_op.Set(Gf.Vec3f(curr[0], curr[1], float(z_scale)))
+
+    def _thicken_and_reposition_floors(self, stage):
+        # colliders
+        self._set_translate_z(stage, "/World/roomScene/colliders/floor/infinitePlane", -1.0)
+        self._set_scale_z(    stage, "/World/roomScene/colliders/floor/infinitePlane",  1.0)
+
+        self._set_translate_z(stage, "/World/roomScene/colliders/floor/mainFloorActor", -0.9)
+        self._set_scale_z(    stage, "/World/roomScene/colliders/floor/mainFloorActor",  1.0)
+
+        # render meshes follow the same transforms
+        self._set_translate_z(stage, "/World/roomScene/renderables/groundPlane0", -0.4)   # follow infinitePlane
+        self._set_scale_z(    stage, "/World/roomScene/renderables/groundPlane0",  1.0)
+
+        self._set_translate_z(stage, "/World/roomScene/renderables/groundPlane1", 0.5)   # follow mainFloorActor
+        self._set_scale_z(    stage, "/World/roomScene/renderables/groundPlane1",  1.0)
+    # -----------------------------------------------------------------------
 
     # ---------- physics sizing ----------
     def _compute_particle_system_offsets(self, r):
@@ -268,6 +313,9 @@ class FluidBallEmitterDemo(demo.AsyncDemoBase):
         demo.get_demo_room(self, stage)
         # …then surgically remove walls + windows (visuals & colliders) and center props
         self._remove_walls_windows_and_props(stage)
+
+        # Set new floor transforms & thickness (only these changes)
+        self._thicken_and_reposition_floors(stage)
 
         # Particle System under /World
         self._particleSystemPath = Sdf.Path("/World/particleSystem0")
