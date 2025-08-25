@@ -41,12 +41,12 @@ class FluidBallEmitterDemo(demo.AsyncDemoBase):
 
         # ---------- SIZE KNOBS ----------
         self._particle_size = 0.003  # <<< RADIUS in meters (physics + visuals)
-        self._emit_radius   = 0.01  # <<< RADIUS in meters (nozzle opening)
+        self._emit_radius   = 0.007  # <<< RADIUS in meters (nozzle opening)
 
         # emission kinematics
         self._emit_enabled = True
-        self._emit_rate_particles_per_second = 2000
-        self._emit_velocity = Gf.Vec3f(0.0, 0.0, -10.0)
+        self._emit_rate_particles_per_second = 3000
+        self._emit_velocity = Gf.Vec3f(0.0, 0.0, -20.0)
         self._vel_jitter = 0.0
         self._pos_jitter = 0.0
         self._emit_accum = 0.0
@@ -59,7 +59,7 @@ class FluidBallEmitterDemo(demo.AsyncDemoBase):
         self._color_cycle = True
 
         # anisotropy controls (helps reduce big newborn look)
-        self._useAnisotropy = True
+        self._useAnisotropy = False
         self._anisotropy_scale = 0.7
 
         # USD / stage handles
@@ -72,8 +72,8 @@ class FluidBallEmitterDemo(demo.AsyncDemoBase):
 
         # ORBITING NOZZLE — /World coords
         self._orbit_enabled = True
-        self._orbit_center = Gf.Vec3f(0.0, 0.0, 1.0)  # 1 m high
-        self._orbit_radius = 0.5                      # 1 m diameter circle
+        self._orbit_center = Gf.Vec3f(0.0, 0.0, 0.7)  # 1 m high
+        self._orbit_radius = 0.1                      # 0.2 m diameter circle
         self._orbit_omega = 2.0 * math.pi * 0.2       # 0.2 rev/s
         self._orbit_phase = 0.0
         self._nozzle_pos = self._orbit_center + Gf.Vec3f(self._orbit_radius, 0.0, 0.0)
@@ -183,12 +183,10 @@ class FluidBallEmitterDemo(demo.AsyncDemoBase):
     # remove windows/walls (visuals) AND their colliders; keep floor + floor collider
     def _remove_walls_windows_and_props(self, stage):
         paths = [
-            # visuals
             "/World/roomScene/walls",
             "/World/roomScene/windows",
             "/World/Room/walls", "/World/Room/windows",
             "/World/room/walls", "/World/room/windows",
-            # colliders
             "/World/roomScene/colliders/walls",
             "/World/roomScene/colliders/windows",
             "/World/Room/colliders/walls",
@@ -226,7 +224,6 @@ class FluidBallEmitterDemo(demo.AsyncDemoBase):
         if not (prim and prim.IsValid()):
             return
         xf = UsdGeom.Xformable(prim)
-        # find first translate op or add one
         t_op = None
         for op in xf.GetOrderedXformOps():
             if op.GetOpType() == UsdGeom.XformOp.TypeTranslate:
@@ -253,24 +250,21 @@ class FluidBallEmitterDemo(demo.AsyncDemoBase):
         s_op.Set(Gf.Vec3f(curr[0], curr[1], float(z_scale)))
 
     def _thicken_and_reposition_floors(self, stage):
-        # colliders
         self._set_translate_z(stage, "/World/roomScene/colliders/floor/infinitePlane", -1.0)
         self._set_scale_z(    stage, "/World/roomScene/colliders/floor/infinitePlane",  1.0)
 
         self._set_translate_z(stage, "/World/roomScene/colliders/floor/mainFloorActor", -0.9)
         self._set_scale_z(    stage, "/World/roomScene/colliders/floor/mainFloorActor",  1.0)
 
-        # render meshes follow the same transforms
-        self._set_translate_z(stage, "/World/roomScene/renderables/groundPlane0", -0.4)   # follow infinitePlane
+        self._set_translate_z(stage, "/World/roomScene/renderables/groundPlane0", -0.4)
         self._set_scale_z(    stage, "/World/roomScene/renderables/groundPlane0",  1.0)
 
-        self._set_translate_z(stage, "/World/roomScene/renderables/groundPlane1", 0.5)   # follow mainFloorActor
+        self._set_translate_z(stage, "/World/roomScene/renderables/groundPlane1", 0.5)
         self._set_scale_z(    stage, "/World/roomScene/renderables/groundPlane1",  1.0)
     # -----------------------------------------------------------------------
 
     # ---------- physics sizing ----------
     def _compute_particle_system_offsets(self, r):
-        # r := fluid_rest_offset; keep typical demo ratios
         fluid_rest_offset = float(r)
         rest_offset = fluid_rest_offset / 0.6
         solid_rest_offset = rest_offset
@@ -309,18 +303,12 @@ class FluidBallEmitterDemo(demo.AsyncDemoBase):
         defaultPrimPath, scene = demo.setup_physics_scene(self, stage, metersPerUnit=1.0)
         scenePath = defaultPrimPath + "/physicsScene"
 
-        # Use premade scene (camera/lights/ground)…
         demo.get_demo_room(self, stage)
-        # …then surgically remove walls + windows (visuals & colliders) and center props
         self._remove_walls_windows_and_props(stage)
-
-        # Set new floor transforms & thickness (only these changes)
         self._thicken_and_reposition_floors(stage)
 
-        # Particle System under /World
         self._particleSystemPath = Sdf.Path("/World/particleSystem0")
 
-        # physics size from chosen radius
         r = float(self._particle_size)
         contactOffset, restOffset, particleContactOffset, solidRestOffset, fluidRestOffset = \
             self._compute_particle_system_offsets(r)
@@ -346,20 +334,20 @@ class FluidBallEmitterDemo(demo.AsyncDemoBase):
         if self._usePointInstancer and self._useAnisotropy:
             particleUtils.add_physx_particle_anisotropy(stage, self._particleSystemPath, scale=self._anisotropy_scale)
 
-        # pbd material
+        # -------------------- ONLY CHANGE: make it more viscoelastic --------------------
         pbd_particle_material_path = omni.usd.get_stage_next_free_path(stage, "/pbdParticleMaterial", True)
         particleUtils.add_pbd_particle_material(
             stage,
             pbd_particle_material_path,
-            cohesion=5,
-            viscosity=1000,
-            surface_tension=0.02,
-            friction=1000,
-            damping=0.99,
+            cohesion=200.0,          # ↑ more “stick” / filament formation
+            viscosity=1000000.0,       # ↑ strong resistance to shear/stretch (syrupy)
+            surface_tension=1000.0,   # ↑ tighter clumps / rounded lobes
+            friction=500000.0,        # ↑ more drag against surfaces
+            damping=0.999,          # ↑ reduces jitter, adds “memory”
         )
         physicsUtils.add_physics_material_to_prim(stage, particle_system.GetPrim(), pbd_particle_material_path)
+        # --------------------------------------------------------------------------------
 
-        # Nozzle viz
         self._ensure_nozzle_viz(stage)
 
         self._colors = self.create_colors()
@@ -520,7 +508,6 @@ class FluidBallEmitterDemo(demo.AsyncDemoBase):
             self._sharedParticlePrim.CreateDisplayColorPrimvar(interpolation="vertex")
             self._sharedParticlePrim.GetDisplayColorPrimvar().CreateIndicesAttr().Set([])
 
-        # capacity for continuous emission
         self._sharedParticlePrim.GetPrim().CreateAttribute(
             "physxParticle:maxParticles", Sdf.ValueTypeNames.Int
         ).Set(self._max_particles)
